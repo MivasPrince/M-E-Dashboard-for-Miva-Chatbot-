@@ -10,6 +10,7 @@ import hashlib
 import base64
 from io import BytesIO
 import numpy as np
+import requests
 from typing import Dict, Any, Optional, List, Tuple
 
 # Page configuration
@@ -20,14 +21,33 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Database configuration
-DB_CONFIG = {
-    "host": "16.170.143.253",
-    "port": 5432,
-    "user": "admin",
-    "password": "password123",
-    "database": "miva_ai_db",
-}
+# Database configuration - using Streamlit secrets in cloud, fallback for local
+if 'database' in st.secrets:
+    DB_CONFIG = {
+        "host": st.secrets["database"]["host"],
+        "port": st.secrets["database"]["port"],
+        "user": st.secrets["database"]["user"],
+        "password": st.secrets["database"]["password"],
+        "database": st.secrets["database"]["database"],
+    }
+    
+    # Auth config from secrets
+    AUTH_USERNAME = st.secrets["auth"]["admin_username"]
+    AUTH_PASSWORD = st.secrets["auth"]["admin_password"]
+else:
+    # Fallback for local development
+    DB_CONFIG = {
+        "host": "16.170.143.253",
+        "port": 5432,
+        "user": "admin",
+        "password": "password123",
+        "database": "miva_ai_db",
+    }
+    AUTH_USERNAME = "miva_admin"
+    AUTH_PASSWORD = "password123"
+
+# Miva logo URL
+MIVA_LOGO_URL = "https://i.imgur.com/azwWWQN.jpeg"
 
 # Brand colors
 BRAND_COLORS = {
@@ -39,6 +59,35 @@ BRAND_COLORS = {
     "warning": "#F59E0B"
 }
 
+# Logo loading function
+@st.cache_data(ttl=3600)  # Cache for 1 hour
+def load_miva_logo():
+    """Load Miva logo from URL and return base64 encoded string."""
+    try:
+        response = requests.get(MIVA_LOGO_URL, timeout=10)
+        response.raise_for_status()
+        
+        # Convert to base64 for embedding
+        img_base64 = base64.b64encode(response.content).decode()
+        return f"data:image/jpeg;base64,{img_base64}"
+    except Exception as e:
+        st.warning(f"Could not load Miva logo: {e}")
+        return None
+
+def display_miva_logo(width: int = 150):
+    """Display Miva logo in sidebar or main area."""
+    logo_data = load_miva_logo()
+    if logo_data:
+        st.image(logo_data, width=width)
+    else:
+        # Fallback text logo
+        st.markdown(f"""
+        <div style="text-align: center; padding: 20px; background: {BRAND_COLORS['primary']}; 
+                    color: white; border-radius: 10px; margin: 10px 0;">
+            <h2 style="margin: 0;">MIVA</h2>
+            <p style="margin: 5px 0 0 0; font-size: 0.8em;">Open University</p>
+        </div>
+        """, unsafe_allow_html=True)
 # Custom CSS for professional styling
 def load_css():
     st.markdown(f"""
@@ -181,7 +230,7 @@ def check_password():
         username = st.session_state.get("username", "")
         password = st.session_state.get("password", "")
         
-        if username == "miva_admin" and password == "password123":
+        if username == AUTH_USERNAME and password == AUTH_PASSWORD:
             st.session_state["password_correct"] = True
             st.session_state["user_role"] = "Owner"  # Set role for authenticated user
             del st.session_state["password"]  # Don't store password
@@ -193,30 +242,55 @@ def check_password():
     if st.session_state.get("password_correct", False):
         return True
 
-    # Show login form
-    st.markdown(f"""
-    <div style="display: flex; justify-content: center; align-items: center; height: 60vh;">
-        <div style="background: white; padding: 3rem; border-radius: 1rem; box-shadow: 0 10px 25px rgba(0,0,0,0.1); max-width: 400px; width: 100%;">
+    # Show login form with Miva branding
+    col1, col2, col3 = st.columns([1, 2, 1])
+    
+    with col2:
+        st.markdown(f"""
+        <div style="background: white; padding: 3rem; border-radius: 1rem; 
+                    box-shadow: 0 10px 25px rgba(0,0,0,0.1); margin-top: 5rem;">
             <div style="text-align: center; margin-bottom: 2rem;">
-                <h1 style="color: {BRAND_COLORS['primary']}; margin-bottom: 0.5rem;">Miva Open University</h1>
-                <h3 style="color: {BRAND_COLORS['secondary']}; margin-bottom: 2rem;">M&E Dashboard</h3>
+        """, unsafe_allow_html=True)
+        
+        # Display logo
+        display_miva_logo(200)
+        
+        st.markdown(f"""
+                <h1 style="color: {BRAND_COLORS['primary']}; margin: 1rem 0 0.5rem 0;">
+                    Miva Open University
+                </h1>
+                <h3 style="color: {BRAND_COLORS['secondary']}; margin-bottom: 2rem;">
+                    M&E Dashboard
+                </h3>
             </div>
-    """, unsafe_allow_html=True)
-    
-    st.text_input("Username", key="username", placeholder="Enter username")
-    st.text_input("Password", type="password", key="password", placeholder="Enter password")
-    st.button("Login", on_click=password_entered, use_container_width=True)
-    
-    if "password_correct" in st.session_state and not st.session_state["password_correct"]:
-        st.error("😞 Username or password incorrect")
-    
-    st.markdown("</div></div>", unsafe_allow_html=True)
+        """, unsafe_allow_html=True)
+        
+        st.text_input("Username", key="username", placeholder="Enter username")
+        st.text_input("Password", type="password", key="password", placeholder="Enter password")
+        st.button("Login", on_click=password_entered, use_container_width=True, type="primary")
+        
+        if "password_correct" in st.session_state and not st.session_state["password_correct"]:
+            st.error("😞 Username or password incorrect")
+        
+        st.markdown("</div>", unsafe_allow_html=True)
     return False
 
 # Database connection functions
 @st.cache_resource
+def init_connection():
+    """Initialize database connection with connection pooling."""
+    try:
+        conn = psycopg2.connect(**DB_CONFIG)
+        # Test the connection
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1")
+        return conn
+    except Exception as e:
+        st.error(f"Database connection failed: {e}")
+        return None
+
 def get_connection():
-    """Get database connection with caching."""
+    """Get a fresh database connection."""
     try:
         conn = psycopg2.connect(**DB_CONFIG)
         return conn
@@ -226,12 +300,13 @@ def get_connection():
 
 @st.cache_data(ttl=300)  # Cache for 5 minutes
 def run_query(sql: str, params: Dict[str, Any] = None) -> pd.DataFrame:
-    """Execute SQL query and return DataFrame."""
-    conn = get_connection()
-    if not conn:
-        return pd.DataFrame()
-    
+    """Execute SQL query and return DataFrame with proper connection handling."""
+    conn = None
     try:
+        conn = get_connection()
+        if not conn:
+            return pd.DataFrame()
+        
         if params:
             df = pd.read_sql_query(sql, conn, params=params)
         else:
@@ -241,7 +316,11 @@ def run_query(sql: str, params: Dict[str, Any] = None) -> pd.DataFrame:
         st.error(f"Query failed: {e}")
         return pd.DataFrame()
     finally:
-        conn.close()
+        if conn:
+            try:
+                conn.close()
+            except:
+                pass
 
 # Date helper functions
 def compute_dates(period_option: str, custom_start: date = None, custom_end: date = None) -> Tuple[datetime, datetime]:
@@ -456,7 +535,32 @@ def display_kpis(kpis: Dict[str, Any]):
             delta_color=delta_color
         )
 
-def main():
+def test_database_connection():
+    """Test database connection and return status."""
+    try:
+        conn = get_connection()
+        if not conn:
+            return False, "Could not establish connection"
+        
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 as test")
+            result = cur.fetchone()
+            
+        conn.close()
+        return True, "Connection successful"
+    except Exception as e:
+        return False, str(e)
+
+def show_database_status():
+    """Show database connection status in sidebar."""
+    is_connected, message = test_database_connection()
+    
+    if is_connected:
+        st.sidebar.success("🟢 Database Connected")
+    else:
+        st.sidebar.error(f"🔴 Database Error: {message}")
+        
+    return is_connected
     """Main application function."""
     load_css()
     
@@ -464,21 +568,33 @@ def main():
     if not check_password():
         return
     
-    # Header
-    st.markdown(f"""
-    <div style="display: flex; align-items: center; margin-bottom: 2rem; padding-bottom: 1rem; border-bottom: 1px solid #E5E7EB;">
-        <div>
-            <h1 class="header-title">Miva Open University</h1>
-            <p class="subheader">Monitoring & Evaluation Dashboard</p>
-        </div>
-        <div style="margin-left: auto; background: {BRAND_COLORS['primary']}; color: white; padding: 0.5rem 1rem; border-radius: 0.375rem; font-size: 0.875rem;">
-            Role: {st.session_state.get('user_role', 'Viewer')}
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+    # Header with logo and branding
+    header_col1, header_col2 = st.columns([1, 4])
     
-    # Sidebar filters
-    st.sidebar.markdown("## 📊 Dashboard Filters")
+    with header_col1:
+        display_miva_logo(120)
+    
+    with header_col2:
+        st.markdown(f"""
+        <div style="padding-top: 1rem;">
+            <h1 class="header-title" style="margin-bottom: 0.25rem;">Miva Open University</h1>
+            <p class="subheader" style="margin-bottom: 0.5rem;">Monitoring & Evaluation Dashboard</p>
+            <div style="background: {BRAND_COLORS['primary']}; color: white; padding: 0.25rem 0.75rem; 
+                        border-radius: 0.375rem; font-size: 0.75rem; display: inline-block;">
+                Role: {st.session_state.get('user_role', 'Viewer')}
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    st.markdown("<hr style='margin: 1.5rem 0; border: 1px solid #E5E7EB;'>", unsafe_allow_html=True)
+    
+    # Sidebar with logo and filters
+    with st.sidebar:
+        # Sidebar logo
+        display_miva_logo(180)
+        
+        st.markdown("---")
+        st.markdown("## 📊 Dashboard Filters")
     
     # Period selection
     period_options = ["Last 7 days", "Last 14 days", "Last 30 days", "Last 90 days", "Custom"]
@@ -521,7 +637,313 @@ def main():
     
     # Display selected page
     if selected_page == "📊 Overview":
-        show_overview_page(start_date, end_date, previous_start, previous_end)
+                elif selected_page == "💬 Feedback":
+            show_feedback_page(start_date, end_date, min_rating, max_rating, feedback_type, email_domain)
+        elif selected_page == "🗨️ Conversations":
+            show_conversations_page(start_date, end_date)
+        elif selected_page == "👥 Sessions":
+            show_sessions_page(start_date, end_date, only_active)
+        elif selected_page == "🔐 OTP Monitor":
+            show_otp_page(start_date, end_date)
+        elif selected_page == "📄 Reports":
+            show_reports_page(start_date, end_date)
+    except Exception as e:
+        st.error(f"An error occurred: {e}")
+        st.info("Please try refreshing the page or contact support if the problem persists.")
+        
+        # Show error details for debugging (only for Owner role)
+        if st.session_state.get('user_role') == 'Owner':
+            with st.expander("🔧 Debug Information (Owner Only)"):
+                st.code(str(e))
+                st.write("**Session State:**")
+                st.write(st.session_state)
+
+# Add a simple fallback for empty data
+def safe_display_chart(chart_data, chart_func, title, empty_message="No data available"):
+    """Safely display charts with fallback for empty data."""
+    if chart_data is None or chart_data.empty:
+        st.info(f"📊 {title}: {empty_message}")
+        return False
+    
+    try:
+        chart_func()
+        return True
+    except Exception as e:
+        st.error(f"Error displaying {title}: {e}")
+        return False
+
+def show_overview_page(start_date, end_date, previous_start, previous_end):
+    """Display the overview page with KPIs and trends."""
+    st.markdown("## 📊 Dashboard Overview")
+    
+    # Get and display KPIs with error handling
+    try:
+        kpis = get_kpis(start_date, end_date, previous_start, previous_end)
+        display_kpis(kpis)
+    except Exception as e:
+        st.error(f"Error loading KPIs: {e}")
+        # Show default empty KPIs
+        display_kpis({
+            'active_sessions': 0, 'total_messages': 0, 'unique_users': 0,
+            'csat': 0, 'negative_pct': 0, 'otp_rate': 0,
+            'sessions_delta': 0, 'messages_delta': 0, 'users_delta': 0,
+            'csat_delta': 0, 'negative_delta': 0, 'otp_delta': 0
+        })
+    
+    # Trends section
+    st.markdown("## 📈 Trends Analysis")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Messages per day trend
+        try:
+            daily_messages = run_query("""
+                SELECT 
+                    DATE(timestamp) as date,
+                    COUNT(*) as message_count
+                FROM chat_messages
+                WHERE timestamp BETWEEN %(start_date)s AND %(end_date)s
+                GROUP BY DATE(timestamp)
+                ORDER BY date
+            """, {'start_date': start_date, 'end_date': end_date})
+            
+            if not daily_messages.empty:
+                fig_messages = px.line(
+                    daily_messages, 
+                    x='date', 
+                    y='message_count',
+                    title="Daily Message Volume",
+                    color_discrete_sequence=[BRAND_COLORS['primary']]
+                )
+                fig_messages.update_layout(
+                    showlegend=False,
+                    title_font_color=BRAND_COLORS['primary'],
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    paper_bgcolor='rgba(0,0,0,0)'
+                )
+                st.plotly_chart(fig_messages, use_container_width=True)
+            else:
+                st.info("📊 No message data available for the selected period")
+        except Exception as e:
+            st.error(f"Error loading message trends: {e}")
+    
+    with col2:
+        # Sessions per day trend
+        try:
+            daily_sessions = run_query("""
+                SELECT 
+                    DATE(created_at) as date,
+                    COUNT(DISTINCT session_id) as session_count
+                FROM chat_sessions
+                WHERE created_at BETWEEN %(start_date)s AND %(end_date)s
+                GROUP BY DATE(created_at)
+                ORDER BY date
+            """, {'start_date': start_date, 'end_date': end_date})
+            
+            if not daily_sessions.empty:
+                fig_sessions = px.line(
+                    daily_sessions, 
+                    x='date', 
+                    y='session_count',
+                    title="Daily New Sessions",
+                    color_discrete_sequence=[BRAND_COLORS['success']]
+                )
+                fig_sessions.update_layout(
+                    showlegend=False,
+                    title_font_color=BRAND_COLORS['primary'],
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    paper_bgcolor='rgba(0,0,0,0)'
+                )
+                st.plotly_chart(fig_sessions, use_container_width=True)
+            else:
+                st.info("📊 No session data available for the selected period")
+        except Exception as e:
+            st.error(f"Error loading session trends: {e}")
+    
+    # Activity heatmap
+    st.markdown("## 🕐 Activity Heatmap")
+    
+    try:
+        activity_data = run_query("""
+            SELECT 
+                EXTRACT(hour FROM timestamp) as hour,
+                EXTRACT(dow FROM timestamp) as day_of_week,
+                COUNT(*) as message_count
+            FROM chat_messages
+            WHERE timestamp BETWEEN %(start_date)s AND %(end_date)s
+            GROUP BY EXTRACT(hour FROM timestamp), EXTRACT(dow FROM timestamp)
+            ORDER BY hour, day_of_week
+        """, {'start_date': start_date, 'end_date': end_date})
+        
+        if not activity_data.empty:
+            # Create pivot table for heatmap
+            heatmap_data = activity_data.pivot(index='hour', columns='day_of_week', values='message_count').fillna(0)
+            
+            # Day labels
+            day_labels = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+            heatmap_data.columns = [day_labels[int(col)] for col in heatmap_data.columns]
+            
+            fig_heatmap = px.imshow(
+                heatmap_data,
+                title="Message Activity by Hour and Day of Week",
+                labels=dict(x="Day of Week", y="Hour of Day", color="Messages"),
+                color_continuous_scale="Blues"
+            )
+            fig_heatmap.update_layout(
+                title_font_color=BRAND_COLORS['primary']
+            )
+            st.plotly_chart(fig_heatmap, use_container_width=True)
+        else:
+            st.info("📊 No activity data available for heatmap")
+    except Exception as e:
+        st.error(f"Error loading activity heatmap: {e}")
+
+def show_feedback_page(start_date, end_date, min_rating, max_rating, feedback_type, email_domain):
+    """Display the feedback analysis page."""
+    st.markdown("## 💬 Feedback Analysis")
+    
+    # Build filter conditions
+    filter_conditions = ["cf.created_at BETWEEN %(start_date)s AND %(end_date)s"]
+    filter_params = {'start_date': start_date, 'end_date': end_date}
+    
+    if min_rating != 1 or max_rating != 5:
+        filter_conditions.append("cf.rating::int BETWEEN %(min_rating)s AND %(max_rating)s")
+        filter_params.update({'min_rating': min_rating, 'max_rating': max_rating})
+    
+    if feedback_type != "All":
+        filter_conditions.append("cf.feedback_type = %(feedback_type)s")
+        filter_params['feedback_type'] = feedback_type
+    
+    if email_domain:
+        filter_conditions.append("cf.email LIKE %(email_pattern)s")
+        filter_params['email_pattern'] = f"%{email_domain}"
+    
+    filter_clause = " AND ".join(filter_conditions)
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Rating distribution
+        try:
+            rating_dist = run_query(f"""
+                SELECT 
+                    rating::int as rating,
+                    COUNT(*) as count
+                FROM chat_feedback cf
+                WHERE {filter_clause}
+                GROUP BY rating::int
+                ORDER BY rating::int
+            """, filter_params)
+            
+            if not rating_dist.empty:
+                fig_rating = px.bar(
+                    rating_dist,
+                    x='rating',
+                    y='count',
+                    title="Rating Distribution",
+                    color='count',
+                    color_continuous_scale="RdYlBu_r"
+                )
+                fig_rating.update_layout(
+                    title_font_color=BRAND_COLORS['primary'],
+                    showlegend=False
+                )
+                st.plotly_chart(fig_rating, use_container_width=True)
+            else:
+                st.info("📊 No rating data available for the selected criteria")
+        except Exception as e:
+            st.error(f"Error loading rating distribution: {e}")
+    
+    with col2:
+        # Feedback type distribution
+        try:
+            type_dist = run_query(f"""
+                SELECT 
+                    feedback_type,
+                    COUNT(*) as count
+                FROM chat_feedback cf
+                WHERE {filter_clause}
+                GROUP BY feedback_type
+                ORDER BY count DESC
+            """, filter_params)
+            
+            if not type_dist.empty:
+                fig_type = px.pie(
+                    type_dist,
+                    values='count',
+                    names='feedback_type',
+                    title="Feedback Type Distribution"
+                )
+                fig_type.update_layout(
+                    title_font_color=BRAND_COLORS['primary']
+                )
+                st.plotly_chart(fig_type, use_container_width=True)
+            else:
+                st.info("📊 No feedback type data available for the selected criteria")
+        except Exception as e:
+            st.error(f"Error loading feedback type distribution: {e}")
+    
+    # Feedback table with details
+    st.markdown("### 📝 Recent Feedback")
+    
+    try:
+        feedback_data = run_query(f"""
+            SELECT 
+                cf.created_at,
+                cf.session_id,
+                cf.email,
+                cf.rating::int as rating,
+                cf.feedback_type,
+                cf.comment,
+                cf.user_agent,
+                cf.ip_address
+            FROM chat_feedback cf
+            WHERE {filter_clause}
+            ORDER BY cf.created_at DESC
+            LIMIT 100
+        """, filter_params)
+        
+        if not feedback_data.empty:
+            # Format the data for display
+            display_df = feedback_data.copy()
+            display_df['created_at'] = pd.to_datetime(display_df['created_at']).dt.strftime('%Y-%m-%d %H:%M')
+            display_df['rating_stars'] = display_df['rating'].apply(lambda x: '⭐' * x + '☆' * (5-x))
+            display_df['comment_preview'] = display_df['comment'].apply(
+                lambda x: (str(x)[:50] + '...') if pd.notna(x) and len(str(x)) > 50 else str(x) if pd.notna(x) else ''
+            )
+            
+            # Select columns for display
+            columns_to_show = ['created_at', 'email', 'rating_stars', 'feedback_type', 'comment_preview', 'session_id']
+            st.dataframe(
+                display_df[columns_to_show],
+                use_container_width=True,
+                column_config={
+                    'created_at': 'Date/Time',
+                    'email': 'User Email',
+                    'rating_stars': 'Rating',
+                    'feedback_type': 'Type',
+                    'comment_preview': 'Comment',
+                    'session_id': st.column_config.LinkColumn(
+                        'Session',
+                        help="Click to view full conversation",
+                        display_text="View"
+                    )
+                }
+            )
+            
+            # Session detail drawer
+            if st.button("🔍 View Session Details", help="Select a session from the table above"):
+                session_id = st.text_input("Enter Session ID:", placeholder="Paste session ID here")
+                if session_id:
+                    show_session_conversation(session_id)
+        else:
+            st.info("📝 No feedback data available for the selected criteria")
+    except Exception as e:
+        st.error(f"Error loading feedback data: {e}")
+
+if __name__ == "__main__":
+    main()(start_date, end_date, previous_start, previous_end)
     elif selected_page == "💬 Feedback":
         show_feedback_page(start_date, end_date, min_rating, max_rating, feedback_type, email_domain)
     elif selected_page == "🗨️ Conversations":
