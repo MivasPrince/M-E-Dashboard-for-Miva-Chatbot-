@@ -942,6 +942,467 @@ def show_feedback_page(start_date, end_date, min_rating, max_rating, feedback_ty
     except Exception as e:
         st.error(f"Error loading feedback data: {e}")
 
+def show_session_conversation(session_id: str):
+    """Display full conversation for a session."""
+    st.markdown(f"### 🗨️ Conversation Details - Session: `{session_id}`")
+    
+    # Get conversation messages
+    messages = run_query("""
+        SELECT 
+            message_type,
+            content,
+            timestamp,
+            message_metadata
+        FROM chat_messages
+        WHERE session_id = %(session_id)s
+        ORDER BY timestamp ASC
+    """, {'session_id': session_id})
+    
+    if not messages.empty:
+        # Display messages in chat format
+        for _, msg in messages.iterrows():
+            timestamp = pd.to_datetime(msg['timestamp']).strftime('%H:%M:%S')
+            msg_type = msg['message_type'].lower()
+            content = msg['content']
+            
+            if msg_type == 'user':
+                st.markdown(f"""
+                <div style="display: flex; justify-content: flex-end; margin: 10px 0;">
+                    <div class="conversation-bubble user-bubble">
+                        <div style="font-size: 0.8em; opacity: 0.8; margin-bottom: 5px;">User • {timestamp}</div>
+                        <div>{content}</div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+            elif msg_type == 'bot' or msg_type == 'assistant':
+                st.markdown(f"""
+                <div style="display: flex; justify-content: flex-start; margin: 10px 0;">
+                    <div class="conversation-bubble bot-bubble">
+                        <div style="font-size: 0.8em; opacity: 0.8; margin-bottom: 5px;">Assistant • {timestamp}</div>
+                        <div>{content}</div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                st.markdown(f"""
+                <div style="display: flex; justify-content: center; margin: 10px 0;">
+                    <div class="conversation-bubble system-bubble">
+                        <div style="font-size: 0.8em; margin-bottom: 5px;">System • {timestamp}</div>
+                        <div>{content}</div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+    else:
+        st.warning(f"No messages found for session ID: {session_id}")
+
+def show_conversations_page(start_date, end_date):
+    """Display the conversations exploration page."""
+    st.markdown("## 🗨️ Conversation Explorer")
+    
+    # Search functionality
+    st.markdown("### 🔍 Search Conversations")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        search_session_id = st.text_input("🆔 Session ID", placeholder="Enter session ID...")
+    
+    with col2:
+        search_user_id = st.text_input("👤 User ID", placeholder="Enter user ID...")
+    
+    with col3:
+        search_content = st.text_input("💬 Message Content", placeholder="Search in messages...")
+    
+    # Build search query
+    search_conditions = ["cm.timestamp BETWEEN %(start_date)s AND %(end_date)s"]
+    search_params = {'start_date': start_date, 'end_date': end_date}
+    
+    if search_session_id:
+        search_conditions.append("cm.session_id = %(session_id)s")
+        search_params['session_id'] = search_session_id
+    
+    if search_user_id:
+        search_conditions.append("(cs.user_id = %(user_id)s OR ccs.user_id = %(user_id)s)")
+        search_params['user_id'] = search_user_id
+    
+    if search_content:
+        search_conditions.append("cm.content ILIKE %(content_pattern)s")
+        search_params['content_pattern'] = f"%{search_content}%"
+    
+    search_clause = " AND ".join(search_conditions)
+    
+    # Get conversation sessions
+    try:
+        conversations = run_query(f"""
+            SELECT DISTINCT
+                cm.session_id,
+                COALESCE(cs.user_id, ccs.user_id) as user_id,
+                MIN(cm.timestamp) as first_message,
+                MAX(cm.timestamp) as last_message,
+                COUNT(cm.id) as message_count,
+                STRING_AGG(
+                    CASE WHEN cm.message_type = 'user' 
+                    THEN LEFT(cm.content, 50) 
+                    END, ' | ' ORDER BY cm.timestamp
+                ) as user_messages_preview
+            FROM chat_messages cm
+            LEFT JOIN chat_sessions cs ON cm.session_id = cs.session_id
+            LEFT JOIN conversation_sessions ccs ON cm.session_id = ccs.session_id
+            WHERE {search_clause}
+            GROUP BY cm.session_id, COALESCE(cs.user_id, ccs.user_id)
+            ORDER BY MAX(cm.timestamp) DESC
+            LIMIT 50
+        """, search_params)
+        
+        if not conversations.empty:
+            st.markdown("### 📋 Search Results")
+            
+            # Format display data
+            display_conversations = conversations.copy()
+            display_conversations['first_message'] = pd.to_datetime(display_conversations['first_message']).dt.strftime('%Y-%m-%d %H:%M')
+            display_conversations['last_message'] = pd.to_datetime(display_conversations['last_message']).dt.strftime('%Y-%m-%d %H:%M')
+            display_conversations['duration'] = (
+                pd.to_datetime(conversations['last_message']) - pd.to_datetime(conversations['first_message'])
+            ).dt.total_seconds() / 60  # Duration in minutes
+            display_conversations['duration_str'] = display_conversations['duration'].apply(
+                lambda x: f"{int(x//60)}h {int(x%60)}m" if x >= 60 else f"{int(x)}m"
+            )
+            
+            # Display results
+            st.dataframe(
+                display_conversations[['session_id', 'user_id', 'first_message', 'message_count', 'duration_str', 'user_messages_preview']],
+                use_container_width=True,
+                column_config={
+                    'session_id': 'Session ID',
+                    'user_id': 'User ID',
+                    'first_message': 'Started',
+                    'message_count': 'Messages',
+                    'duration_str': 'Duration',
+                    'user_messages_preview': 'Preview'
+                }
+            )
+            
+            # Session viewer
+            selected_session = st.selectbox(
+                "🔍 Select session to view full conversation:",
+                options=[''] + conversations['session_id'].tolist(),
+                format_func=lambda x: f"Session: {x}" if x else "Select a session..."
+            )
+            
+            if selected_session:
+                show_session_conversation(selected_session)
+                
+                # Export options
+                if st.button("📥 Export Conversation"):
+                    export_conversation(selected_session)
+        else:
+            st.info("No conversations found matching your search criteria")
+    except Exception as e:
+        st.error(f"Error searching conversations: {e}")
+
+def export_conversation(session_id: str):
+    """Export conversation to CSV/JSON."""
+    try:
+        messages = run_query("""
+            SELECT 
+                session_id,
+                message_type,
+                content,
+                timestamp,
+                message_metadata
+            FROM chat_messages
+            WHERE session_id = %(session_id)s
+            ORDER BY timestamp ASC
+        """, {'session_id': session_id})
+        
+        if not messages.empty:
+            # CSV export
+            csv_buffer = BytesIO()
+            messages.to_csv(csv_buffer, index=False)
+            csv_data = csv_buffer.getvalue()
+            
+            st.download_button(
+                label="📄 Download as CSV",
+                data=csv_data,
+                file_name=f"conversation_{session_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv"
+            )
+            
+            # JSON export
+            json_data = messages.to_json(orient='records', date_format='iso', indent=2)
+            st.download_button(
+                label="📋 Download as JSON",
+                data=json_data,
+                file_name=f"conversation_{session_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                mime="application/json"
+            )
+    except Exception as e:
+        st.error(f"Error exporting conversation: {e}")
+
+def show_sessions_page(start_date, end_date, only_active):
+    """Display the sessions analytics page."""
+    st.markdown("## 👥 Session Analytics")
+    
+    # Session activity trends
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # New vs returning sessions
+        try:
+            session_data = run_query("""
+                WITH user_sessions AS (
+                    SELECT 
+                        COALESCE(cs.user_id, ccs.user_id) as user_id,
+                        DATE(COALESCE(cs.created_at, ccs.created_at)) as session_date,
+                        COUNT(*) as sessions_per_day,
+                        ROW_NUMBER() OVER (PARTITION BY COALESCE(cs.user_id, ccs.user_id) ORDER BY DATE(COALESCE(cs.created_at, ccs.created_at))) as session_rank
+                    FROM chat_sessions cs
+                    FULL OUTER JOIN conversation_sessions ccs ON cs.session_id = ccs.session_id
+                    WHERE COALESCE(cs.created_at, ccs.created_at) BETWEEN %(start_date)s AND %(end_date)s
+                        AND (%(only_active)s = false OR COALESCE(ccs.is_active, true) = true)
+                    GROUP BY COALESCE(cs.user_id, ccs.user_id), DATE(COALESCE(cs.created_at, ccs.created_at))
+                )
+                SELECT 
+                    session_date,
+                    COUNT(CASE WHEN session_rank = 1 THEN 1 END) as new_users,
+                    COUNT(CASE WHEN session_rank > 1 THEN 1 END) as returning_users
+                FROM user_sessions
+                WHERE user_id IS NOT NULL
+                GROUP BY session_date
+                ORDER BY session_date
+            """, {
+                'start_date': start_date, 
+                'end_date': end_date,
+                'only_active': only_active
+            })
+            
+            if not session_data.empty:
+                fig_sessions = go.Figure()
+                
+                fig_sessions.add_trace(go.Scatter(
+                    x=session_data['session_date'],
+                    y=session_data['new_users'],
+                    mode='lines+markers',
+                    name='New Users',
+                    line=dict(color=BRAND_COLORS['primary'])
+                ))
+                
+                fig_sessions.add_trace(go.Scatter(
+                    x=session_data['session_date'],
+                    y=session_data['returning_users'],
+                    mode='lines+markers',
+                    name='Returning Users',
+                    line=dict(color=BRAND_COLORS['success'])
+                ))
+                
+                fig_sessions.update_layout(
+                    title="New vs Returning Users",
+                    title_font_color=BRAND_COLORS['primary'],
+                    xaxis_title="Date",
+                    yaxis_title="User Count"
+                )
+                
+                st.plotly_chart(fig_sessions, use_container_width=True)
+            else:
+                st.info("📊 No session data available for the selected period")
+        except Exception as e:
+            st.error(f"Error loading session trends: {e}")
+    
+    with col2:
+        # Session duration distribution
+        try:
+            duration_data = run_query("""
+                SELECT 
+                    EXTRACT(EPOCH FROM (cs.last_activity - cs.created_at))/60 as duration_minutes
+                FROM chat_sessions cs
+                WHERE cs.created_at BETWEEN %(start_date)s AND %(end_date)s
+                    AND cs.last_activity > cs.created_at
+                    AND EXTRACT(EPOCH FROM (cs.last_activity - cs.created_at))/60 < 180  -- Filter extreme outliers
+            """, {'start_date': start_date, 'end_date': end_date})
+            
+            if not duration_data.empty:
+                fig_duration = px.histogram(
+                    duration_data,
+                    x='duration_minutes',
+                    nbins=20,
+                    title="Session Duration Distribution",
+                    labels={'duration_minutes': 'Duration (minutes)', 'count': 'Sessions'}
+                )
+                fig_duration.update_layout(
+                    title_font_color=BRAND_COLORS['primary'],
+                    showlegend=False
+                )
+                fig_duration.update_traces(marker_color=BRAND_COLORS['secondary'])
+                
+                st.plotly_chart(fig_duration, use_container_width=True)
+            else:
+                st.info("📊 No session duration data available")
+        except Exception as e:
+            st.error(f"Error loading session duration data: {e}")
+
+def show_otp_page(start_date, end_date):
+    """Display the OTP monitoring page."""
+    st.markdown("## 🔐 OTP Verification Monitor")
+    
+    # OTP funnel metrics
+    col1, col2, col3, col4 = st.columns(4)
+    
+    try:
+        otp_metrics = run_query("""
+            SELECT 
+                COUNT(DISTINCT o.id) as otp_created,
+                COUNT(DISTINCT CASE WHEN ov.is_verified THEN ov.id END) as otp_verified,
+                COUNT(DISTINCT CASE WHEN NOT ov.is_verified THEN ov.id END) as otp_failed,
+                PERCENTILE_CONT(0.5) WITHIN GROUP (
+                    ORDER BY EXTRACT(EPOCH FROM (ov.verified_at - ov.created_at))
+                ) as median_verify_time
+            FROM otps o
+            LEFT JOIN otp_verifications ov ON ov.user_identifier = o.user_id 
+                AND ov.otp_code = o.otp_code
+            WHERE o.created_at BETWEEN %(start_date)s AND %(end_date)s
+        """, {'start_date': start_date, 'end_date': end_date})
+        
+        if not otp_metrics.empty:
+            metrics = otp_metrics.iloc[0]
+            
+            with col1:
+                st.metric("OTPs Created", f"{int(metrics.get('otp_created', 0)):,}")
+            
+            with col2:
+                verified = int(metrics.get('otp_verified', 0))
+                st.metric("OTPs Verified", f"{verified:,}")
+            
+            with col3:
+                failed = int(metrics.get('otp_failed', 0))
+                st.metric("OTPs Failed", f"{failed:,}")
+            
+            with col4:
+                verify_time = metrics.get('median_verify_time', 0)
+                if verify_time:
+                    time_str = f"{int(verify_time//60)}m {int(verify_time%60)}s"
+                else:
+                    time_str = "N/A"
+                st.metric("Median Verify Time", time_str)
+        else:
+            with col1:
+                st.metric("OTPs Created", "0")
+            with col2:
+                st.metric("OTPs Verified", "0") 
+            with col3:
+                st.metric("OTPs Failed", "0")
+            with col4:
+                st.metric("Median Verify Time", "N/A")
+    except Exception as e:
+        st.error(f"Error loading OTP metrics: {e}")
+
+def show_reports_page(start_date, end_date):
+    """Display the reports and export page."""
+    st.markdown("## 📄 Reports & Export")
+    
+    user_role = st.session_state.get('user_role', 'Viewer')
+    
+    if user_role == 'Viewer':
+        st.warning("🔒 You have read-only access. Contact an Administrator to get export permissions.")
+        return
+    
+    # Report generation options
+    st.markdown("### 📊 Generate Reports")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        report_type = st.selectbox(
+            "Report Type",
+            ["Executive Summary", "Detailed Analytics", "Feedback Report", "OTP Analysis", "Custom"]
+        )
+    
+    with col2:
+        export_format = st.selectbox("Export Format", ["CSV", "JSON"])
+    
+    # Report notes
+    report_notes = st.text_area("Report Notes", placeholder="Add any notes or context for this report...")
+    
+    # Generate report button
+    if st.button("📋 Generate Report", type="primary"):
+        generate_report(report_type, export_format, start_date, end_date, report_notes)
+
+def generate_report(report_type: str, export_format: str, start_date: datetime, end_date: datetime, notes: str):
+    """Generate and download report."""
+    
+    try:
+        # Calculate period for previous comparison
+        period_length = (end_date - start_date).days
+        previous_start = start_date - timedelta(days=period_length)
+        previous_end = start_date
+        
+        # Get KPIs
+        kpis = get_kpis(start_date, end_date, previous_start, previous_end)
+        
+        if export_format == "CSV":
+            # Generate CSV report
+            report_data = []
+            
+            if report_type == "Executive Summary":
+                report_data = [
+                    ["Metric", "Value", "Previous Period", "Change"],
+                    ["Active Sessions", f"{int(kpis.get('active_sessions', 0)):,}", "", f"{kpis.get('sessions_delta', 0)}"],
+                    ["Total Messages", f"{int(kpis.get('total_messages', 0)):,}", "", f"{kpis.get('messages_delta', 0)}"],
+                    ["Unique Users", f"{int(kpis.get('unique_users', 0)):,}", "", f"{kpis.get('users_delta', 0)}"],
+                    ["CSAT Score", f"{kpis.get('csat', 0):.2f}", "", f"{kpis.get('csat_delta', 0):.2f}"],
+                    ["Negative Feedback %", f"{kpis.get('negative_pct', 0):.1f}%", "", f"{kpis.get('negative_delta', 0):.1f}%"],
+                    ["OTP Verification Rate", f"{kpis.get('otp_rate', 0):.1f}%", "", f"{kpis.get('otp_delta', 0):.1f}%"]
+                ]
+            
+            # Convert to DataFrame and CSV
+            df_report = pd.DataFrame(report_data[1:], columns=report_data[0])
+            csv_buffer = BytesIO()
+            
+            # Add metadata
+            metadata = [
+                f"# Miva Open University - {report_type}",
+                f"# Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                f"# Period: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}",
+                f"# Notes: {notes}",
+                ""
+            ]
+            
+            csv_content = "\n".join(metadata) + df_report.to_csv(index=False)
+            
+            st.download_button(
+                label="📥 Download CSV Report",
+                data=csv_content,
+                file_name=f"miva_report_{report_type.lower().replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv"
+            )
+        
+        elif export_format == "JSON":
+            # Generate JSON report
+            report_json = {
+                "report_metadata": {
+                    "type": report_type,
+                    "generated_at": datetime.now().isoformat(),
+                    "period_start": start_date.isoformat(),
+                    "period_end": end_date.isoformat(),
+                    "notes": notes,
+                    "generated_by": f"miva_admin ({st.session_state.get('user_role', 'Unknown')})"
+                },
+                "kpis": kpis
+            }
+            
+            json_data = json.dumps(report_json, indent=2, default=str)
+            
+            st.download_button(
+                label="📥 Download JSON Report",
+                data=json_data,
+                file_name=f"miva_report_{report_type.lower().replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                mime="application/json"
+            )
+        
+        st.success(f"✅ {report_type} report generated successfully!")
+        
+    except Exception as e:
+        st.error(f"Error generating report: {e}")
+
 if __name__ == "__main__":
     main()(start_date, end_date, previous_start, previous_end)
     elif selected_page == "💬 Feedback":
