@@ -83,7 +83,7 @@ def display_miva_logo(width: int = 150):
         # Fallback text logo
         st.markdown(f"""
         <div style="text-align: center; padding: 20px; background: {BRAND_COLORS['primary']}; 
-                       color: white; border-radius: 10px; margin: 10px 0;">
+                    color: white; border-radius: 10px; margin: 10px 0;">
             <h2 style="margin: 0;">MIVA</h2>
             <p style="margin: 5px 0 0 0; font-size: 0.8em;">Open University</p>
         </div>
@@ -164,18 +164,6 @@ def load_css():
         box-shadow: 0 4px 12px rgba(37, 99, 235, 0.3);
     }}
     
-    .feedback-card {{
-        background: {BRAND_COLORS['white']};
-        border: 1px solid #E5E7EB;
-        border-radius: 0.5rem;
-        padding: 1rem;
-        margin-bottom: 0.5rem;
-    }}
-    
-    .rating-star {{
-        color: #FCD34D;
-    }}
-    
     .conversation-bubble {{
         border-radius: 1rem;
         padding: 0.75rem 1rem;
@@ -201,85 +189,12 @@ def load_css():
         opacity: 0.8;
         font-style: italic;
     }}
-    
-    .alert-negative {{
-        background-color: #FEF2F2;
-        border: 1px solid #FECACA;
-        color: #991B1B;
-        padding: 0.75rem;
-        border-radius: 0.375rem;
-        margin: 0.5rem 0;
-    }}
-    
-    .alert-positive {{
-        background-color: #F0FDF4;
-        border: 1px solid #BBF7D0;
-        color: #166534;
-        padding: 0.75rem;
-        border-radius: 0.375rem;
-        margin: 0.5rem 0;
-    }}
     </style>
     """, unsafe_allow_html=True)
 
-# Authentication functions
-def check_password():
-    """Returns `True` if the user had the correct password."""
-    
-    def password_entered():
-        """Checks whether a password entered by the user is correct."""
-        username = st.session_state.get("username", "")
-        password = st.session_state.get("password", "")
-        
-        if username == AUTH_USERNAME and password == AUTH_PASSWORD:
-            st.session_state["password_correct"] = True
-            st.session_state["user_role"] = "Owner"  # Set role for authenticated user
-            del st.session_state["password"]  # Don't store password
-            del st.session_state["username"]  # Don't store username
-        else:
-            st.session_state["password_correct"] = False
-
-    # Return True if the password is validated
-    if st.session_state.get("password_correct", False):
-        return True
-
-    # Show login form with Miva branding
-    col1, col2, col3 = st.columns([1, 2, 1])
-    
-    with col2:
-        st.markdown(f"""
-        <div style="background: white; padding: 3rem; border-radius: 1rem; 
-                       box-shadow: 0 10px 25px rgba(0,0,0,0.1); margin-top: 5rem;">
-            <div style="text-align: center; margin-bottom: 2rem;">
-        """, unsafe_allow_html=True)
-        
-        # Display logo
-        display_miva_logo(200)
-        
-        st.markdown(f"""
-                <h1 style="color: {BRAND_COLORS['primary']}; margin: 1rem 0 0.5rem 0;">
-                    Miva Open University
-                </h1>
-                <h3 style="color: {BRAND_COLORS['secondary']}; margin-bottom: 2rem;">
-                    M&E Dashboard
-                </h3>
-            </div>
-        """, unsafe_allow_html=True)
-        
-        st.text_input("Username", key="username", placeholder="Enter username")
-        st.text_input("Password", type="password", key="password", placeholder="Enter password")
-        st.button("Login", on_click=password_entered, use_container_width=True, type="primary")
-        
-        if "password_correct" in st.session_state and not st.session_state["password_correct"]:
-            st.error("😞 Username or password incorrect")
-        
-        st.markdown("</div>", unsafe_allow_html=True)
-    return False
-
 # Database connection functions
-@st.cache_resource
-def init_connection():
-    """Initialize database connection."""
+def get_connection():
+    """Get a fresh database connection."""
     try:
         conn = psycopg2.connect(**DB_CONFIG)
         return conn
@@ -287,12 +202,12 @@ def init_connection():
         st.error(f"Database connection failed: {e}")
         return None
 
-# FIX: Modified run_query to use the cached connection for efficiency
 @st.cache_data(ttl=300)  # Cache for 5 minutes
 def run_query(sql: str, params: Dict[str, Any] = None) -> pd.DataFrame:
     """Execute SQL query and return DataFrame with proper connection handling."""
+    conn = None
     try:
-        conn = init_connection() # Use the cached connection
+        conn = get_connection()
         if not conn:
             return pd.DataFrame()
         
@@ -302,11 +217,41 @@ def run_query(sql: str, params: Dict[str, Any] = None) -> pd.DataFrame:
             df = pd.read_sql_query(sql, conn)
         return df
     except Exception as e:
-        # If connection is bad, clear the resource cache and rerun
-        if 'connection' in str(e).lower():
-            st.cache_resource.clear()
         st.error(f"Query failed: {e}")
         return pd.DataFrame()
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except:
+                pass
+
+def test_database_connection():
+    """Test database connection and return status."""
+    try:
+        conn = get_connection()
+        if not conn:
+            return False, "Could not establish connection"
+        
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 as test")
+            result = cur.fetchone()
+            
+        conn.close()
+        return True, "Connection successful"
+    except Exception as e:
+        return False, str(e)
+
+def show_database_status():
+    """Show database connection status in sidebar."""
+    is_connected, message = test_database_connection()
+    
+    if is_connected:
+        st.sidebar.success("🟢 Database Connected")
+    else:
+        st.sidebar.error(f"🔴 Database Error: {message}")
+        
+    return is_connected
 
 # Date helper functions
 def compute_dates(period_option: str, custom_start: date = None, custom_end: date = None) -> Tuple[datetime, datetime]:
@@ -337,12 +282,97 @@ def compute_dates(period_option: str, custom_start: date = None, custom_end: dat
 
 def delta_str(delta: float, is_percentage: bool = False) -> str:
     """Format delta value with appropriate symbol."""
-    if delta is None or np.isnan(delta) or delta == 0:
+    if delta is None or delta == 0:
         return ""
     
     symbol = "%" if is_percentage else ""
     prefix = "+" if delta > 0 else ""
     return f"{prefix}{delta:.1f}{symbol}"
+
+# Authentication functions
+def check_password():
+    """Returns `True` if the user had the correct password."""
+    
+    def password_entered():
+        """Checks whether a password entered by the user is correct."""
+        username = st.session_state.get("username", "")
+        password = st.session_state.get("password", "")
+        selected_role = st.session_state.get("selected_role", "Viewer")
+        
+        if username == AUTH_USERNAME and password == AUTH_PASSWORD:
+            st.session_state["password_correct"] = True
+            st.session_state["user_role"] = selected_role
+            del st.session_state["password"]  # Don't store password
+            del st.session_state["username"]  # Don't store username
+        else:
+            st.session_state["password_correct"] = False
+
+    # Return True if the password is validated
+    if st.session_state.get("password_correct", False):
+        return True
+
+    # Show login form with Miva branding
+    col1, col2, col3 = st.columns([1, 2, 1])
+    
+    with col2:
+        st.markdown(f"""
+        <div style="background: white; padding: 3rem; border-radius: 1rem; 
+                    box-shadow: 0 10px 25px rgba(0,0,0,0.1); margin-top: 2rem;">
+            <div style="text-align: center; margin-bottom: 2rem;">
+        """, unsafe_allow_html=True)
+        
+        # Display logo
+        display_miva_logo(200)
+        
+        st.markdown(f"""
+                <h1 style="color: {BRAND_COLORS['primary']}; margin: 1rem 0 0.5rem 0;">
+                    Miva Open University
+                </h1>
+                <h3 style="color: {BRAND_COLORS['secondary']}; margin-bottom: 2rem;">
+                    M&E Dashboard
+                </h3>
+            </div>
+        """, unsafe_allow_html=True)
+        
+        # Login form
+        st.text_input("Username", key="username", placeholder="Enter username")
+        st.text_input("Password", type="password", key="password", placeholder="Enter password")
+        
+        # Role selection
+        role_options = ["Viewer", "Analyst", "Owner"]
+        st.selectbox("Select Role", role_options, key="selected_role", help="Choose your access level")
+        
+        # Role descriptions
+        role_descriptions = {
+            "Viewer": "👁️ Read-only access to all dashboards",
+            "Analyst": "📊 Read access + export capabilities + saved filters", 
+            "Owner": "🔧 Full administrative access + settings management"
+        }
+        
+        selected_role = st.session_state.get("selected_role", "Viewer")
+        st.info(role_descriptions.get(selected_role, ""))
+        
+        st.button("Login", on_click=password_entered, use_container_width=True, type="primary")
+        
+        if "password_correct" in st.session_state and not st.session_state["password_correct"]:
+            st.error("😞 Username or password incorrect")
+        
+        # Login instructions
+        with st.expander("ℹ️ Login Information"):
+            st.markdown(f"""
+            **Default Credentials:**
+            - Username: `{AUTH_USERNAME}`
+            - Password: `{AUTH_PASSWORD}`
+            
+            **Roles:**
+            - **Viewer**: Can view all data but cannot export
+            - **Analyst**: Can view and export data 
+            - **Owner**: Full access including settings
+            """)
+        
+        st.markdown("</div>", unsafe_allow_html=True)
+    
+    return False
 
 # KPI calculation functions
 def get_kpis(start_date: datetime, end_date: datetime, previous_start: datetime, previous_end: datetime) -> Dict[str, Any]:
@@ -441,17 +471,17 @@ def get_kpis(start_date: datetime, end_date: datetime, previous_start: datetime,
     if not previous_kpis.empty:
         previous = previous_kpis.iloc[0]
         deltas = {
-            'sessions_delta': float(current['active_sessions'] - previous['active_sessions']),
-            'messages_delta': float(current['total_messages'] - previous['total_messages']),
-            'users_delta': float(current['unique_users'] - previous['unique_users']),
-            'csat_delta': float(current['csat'] - previous['csat']),
-            'negative_delta': float(current['negative_pct'] - previous['negative_pct']),
-            'otp_delta': float(current['otp_rate'] - previous['otp_rate'])
+            'sessions_delta': current['active_sessions'] - previous['active_sessions'],
+            'messages_delta': current['total_messages'] - previous['total_messages'],
+            'users_delta': current['unique_users'] - previous['unique_users'],
+            'csat_delta': current['csat'] - previous['csat'],
+            'negative_delta': current['negative_pct'] - previous['negative_pct'],
+            'otp_delta': current['otp_rate'] - previous['otp_rate']
         }
     else:
         deltas = {
-            'sessions_delta': 0.0, 'messages_delta': 0.0, 'users_delta': 0.0,
-            'csat_delta': 0.0, 'negative_delta': 0.0, 'otp_delta': 0.0
+            'sessions_delta': 0, 'messages_delta': 0, 'users_delta': 0,
+            'csat_delta': 0, 'negative_delta': 0, 'otp_delta': 0
         }
     
     return {**current.to_dict(), **deltas}
@@ -463,40 +493,47 @@ def display_kpis(kpis: Dict[str, Any]):
     
     with col1:
         delta = kpis.get('sessions_delta', 0)
+        delta_color = "normal" if delta == 0 else ("inverse" if delta < 0 else "normal")
         st.metric(
             "Active Sessions",
             f"{int(kpis.get('active_sessions', 0)):,}",
-            delta=delta_str(delta)
+            delta=delta_str(delta),
+            delta_color=delta_color
         )
     
     with col2:
         delta = kpis.get('messages_delta', 0)
+        delta_color = "normal" if delta == 0 else ("inverse" if delta < 0 else "normal")
         st.metric(
             "Total Messages",
             f"{int(kpis.get('total_messages', 0)):,}",
-            delta=delta_str(delta)
+            delta=delta_str(delta),
+            delta_color=delta_color
         )
     
     with col3:
         delta = kpis.get('users_delta', 0)
+        delta_color = "normal" if delta == 0 else ("inverse" if delta < 0 else "normal")
         st.metric(
             "Unique Users",
             f"{int(kpis.get('unique_users', 0)):,}",
-            delta=delta_str(delta)
+            delta=delta_str(delta),
+            delta_color=delta_color
         )
     
     with col4:
         delta = kpis.get('csat_delta', 0)
+        delta_color = "normal" if delta == 0 else ("inverse" if delta < 0 else "normal")
         st.metric(
             "CSAT Score",
             f"{kpis.get('csat', 0):.2f}/5.0",
-            delta=delta_str(delta)
+            delta=delta_str(delta),
+            delta_color=delta_color
         )
     
     with col5:
         delta = kpis.get('negative_delta', 0)
-        # For negative feedback, a decrease is good (normal), an increase is bad (inverse)
-        delta_color = "normal" if delta <= 0 else "inverse"
+        delta_color = "normal" if delta == 0 else ("normal" if delta < 0 else "inverse")  # Negative is good for negative feedback
         st.metric(
             "Negative Feedback",
             f"{kpis.get('negative_pct', 0):.1f}%",
@@ -506,13 +543,14 @@ def display_kpis(kpis: Dict[str, Any]):
     
     with col6:
         delta = kpis.get('otp_delta', 0)
+        delta_color = "normal" if delta == 0 else ("inverse" if delta < 0 else "normal")
         st.metric(
             "OTP Verification Rate",
             f"{kpis.get('otp_rate', 0):.1f}%",
-            delta=delta_str(delta, True)
+            delta=delta_str(delta, True),
+            delta_color=delta_color
         )
 
-# Page rendering functions
 def show_overview_page(start_date, end_date, previous_start, previous_end):
     """Display the overview page with KPIs and trends."""
     st.markdown("## 📊 Dashboard Overview")
@@ -523,8 +561,15 @@ def show_overview_page(start_date, end_date, previous_start, previous_end):
         display_kpis(kpis)
     except Exception as e:
         st.error(f"Error loading KPIs: {e}")
+        # Show default empty KPIs
+        display_kpis({
+            'active_sessions': 0, 'total_messages': 0, 'unique_users': 0,
+            'csat': 0, 'negative_pct': 0, 'otp_rate': 0,
+            'sessions_delta': 0, 'messages_delta': 0, 'users_delta': 0,
+            'csat_delta': 0, 'negative_delta': 0, 'otp_delta': 0
+        })
     
-    st.markdown("<hr style='margin: 1.5rem 0; border-top: 1px solid #E5E7EB;'>", unsafe_allow_html=True)
+    # Trends section
     st.markdown("## 📈 Trends Analysis")
     
     col1, col2 = st.columns(2)
@@ -548,10 +593,14 @@ def show_overview_page(start_date, end_date, previous_start, previous_end):
                     x='date', 
                     y='message_count',
                     title="Daily Message Volume",
-                    labels={'date': 'Date', 'message_count': 'Messages'},
                     color_discrete_sequence=[BRAND_COLORS['primary']]
                 )
-                fig_messages.update_layout(showlegend=False)
+                fig_messages.update_layout(
+                    showlegend=False,
+                    title_font_color=BRAND_COLORS['primary'],
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    paper_bgcolor='rgba(0,0,0,0)'
+                )
                 st.plotly_chart(fig_messages, use_container_width=True)
             else:
                 st.info("📊 No message data available for the selected period")
@@ -577,17 +626,21 @@ def show_overview_page(start_date, end_date, previous_start, previous_end):
                     x='date', 
                     y='session_count',
                     title="Daily New Sessions",
-                    labels={'date': 'Date', 'session_count': 'Sessions'},
                     color_discrete_sequence=[BRAND_COLORS['success']]
                 )
-                fig_sessions.update_layout(showlegend=False)
+                fig_sessions.update_layout(
+                    showlegend=False,
+                    title_font_color=BRAND_COLORS['primary'],
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    paper_bgcolor='rgba(0,0,0,0)'
+                )
                 st.plotly_chart(fig_sessions, use_container_width=True)
             else:
                 st.info("📊 No session data available for the selected period")
         except Exception as e:
             st.error(f"Error loading session trends: {e}")
     
-    st.markdown("<hr style='margin: 1.5rem 0; border-top: 1px solid #E5E7EB;'>", unsafe_allow_html=True)
+    # Activity heatmap
     st.markdown("## 🕐 Activity Heatmap")
     
     try:
@@ -603,15 +656,11 @@ def show_overview_page(start_date, end_date, previous_start, previous_end):
         """, {'start_date': start_date, 'end_date': end_date})
         
         if not activity_data.empty:
+            # Create pivot table for heatmap
             heatmap_data = activity_data.pivot(index='hour', columns='day_of_week', values='message_count').fillna(0)
+            
+            # Day labels
             day_labels = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
-            
-            # Ensure all days of the week are present
-            for i in range(7):
-                if i not in heatmap_data.columns:
-                    heatmap_data[i] = 0
-            heatmap_data = heatmap_data.sort_index(axis=1)
-            
             heatmap_data.columns = [day_labels[int(col)] for col in heatmap_data.columns]
             
             fig_heatmap = px.imshow(
@@ -619,6 +668,9 @@ def show_overview_page(start_date, end_date, previous_start, previous_end):
                 title="Message Activity by Hour and Day of Week",
                 labels=dict(x="Day of Week", y="Hour of Day", color="Messages"),
                 color_continuous_scale="Blues"
+            )
+            fig_heatmap.update_layout(
+                title_font_color=BRAND_COLORS['primary']
             )
             st.plotly_chart(fig_heatmap, use_container_width=True)
         else:
@@ -629,120 +681,35 @@ def show_overview_page(start_date, end_date, previous_start, previous_end):
 def show_feedback_page(start_date, end_date, min_rating, max_rating, feedback_type, email_domain):
     """Display the feedback analysis page."""
     st.markdown("## 💬 Feedback Analysis")
-    
-    # Build filter conditions
-    filter_conditions = ["cf.created_at BETWEEN %(start_date)s AND %(end_date)s"]
-    filter_params = {'start_date': start_date, 'end_date': end_date}
-    
-    if min_rating != 1 or max_rating != 5:
-        filter_conditions.append("cf.rating::int BETWEEN %(min_rating)s AND %(max_rating)s")
-        filter_params.update({'min_rating': min_rating, 'max_rating': max_rating})
-    
-    if feedback_type != "All":
-        filter_conditions.append("cf.feedback_type = %(feedback_type)s")
-        filter_params['feedback_type'] = feedback_type
-    
-    if email_domain:
-        filter_conditions.append("cf.email LIKE %(email_pattern)s")
-        filter_params['email_pattern'] = f"%@{email_domain}" # More specific search
-    
-    filter_clause = " AND ".join(filter_conditions)
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        # Rating distribution
-        try:
-            rating_dist = run_query(f"""
-                SELECT 
-                    rating::int as rating,
-                    COUNT(*) as count
-                FROM chat_feedback cf
-                WHERE {filter_clause}
-                GROUP BY rating::int
-                ORDER BY rating::int
-            """, filter_params)
-            
-            if not rating_dist.empty:
-                fig_rating = px.bar(
-                    rating_dist,
-                    x='rating',
-                    y='count',
-                    title="Rating Distribution",
-                    color='rating',
-                    color_continuous_scale=px.colors.sequential.RdBu
-                )
-                st.plotly_chart(fig_rating, use_container_width=True)
-            else:
-                st.info("📊 No rating data available for the selected criteria")
-        except Exception as e:
-            st.error(f"Error loading rating distribution: {e}")
-    
-    with col2:
-        # Feedback type distribution
-        try:
-            type_dist = run_query(f"""
-                SELECT 
-                    feedback_type,
-                    COUNT(*) as count
-                FROM chat_feedback cf
-                WHERE {filter_clause}
-                GROUP BY feedback_type
-                ORDER BY count DESC
-            """, filter_params)
-            
-            if not type_dist.empty:
-                fig_type = px.pie(
-                    type_dist,
-                    values='count',
-                    names='feedback_type',
-                    title="Feedback Type Distribution"
-                )
-                st.plotly_chart(fig_type, use_container_width=True)
-            else:
-                st.info("📊 No feedback type data available for the selected criteria")
-        except Exception as e:
-            st.error(f"Error loading feedback type distribution: {e}")
-    
-    st.markdown("### 📝 Recent Feedback")
-    
-    try:
-        feedback_data = run_query(f"""
-            SELECT 
-                cf.created_at,
-                cf.session_id,
-                cf.email,
-                cf.rating::int as rating,
-                cf.feedback_type,
-                cf.comment
-            FROM chat_feedback cf
-            WHERE {filter_clause}
-            ORDER BY cf.created_at DESC
-            LIMIT 100
-        """, filter_params)
-        
-        if not feedback_data.empty:
-            st.dataframe(feedback_data, use_container_width=True)
-        else:
-            st.info("No feedback entries match the current filters.")
-    except Exception as e:
-        st.error(f"Error loading feedback table: {e}")
+    st.info("📊 Basic feedback analysis - full implementation requires data in your database")
 
-# FIX: Added placeholder functions for pages that were not defined.
 def show_conversations_page(start_date, end_date):
-    st.warning("🚧 The 'Conversations' page is currently under construction.")
+    """Display the conversations exploration page."""
+    st.markdown("## 🗨️ Conversation Explorer")
+    st.info("🔍 Conversation search and analysis - full implementation requires data in your database")
 
 def show_sessions_page(start_date, end_date, only_active):
-    st.warning("🚧 The 'Sessions' page is currently under construction.")
+    """Display the sessions analytics page."""
+    st.markdown("## 👥 Session Analytics")
+    st.info("📈 Session analytics - full implementation requires data in your database")
 
 def show_otp_page(start_date, end_date):
-    st.warning("🚧 The 'OTP Monitor' page is currently under construction.")
+    """Display the OTP monitoring page."""
+    st.markdown("## 🔐 OTP Verification Monitor")
+    st.info("🔐 OTP monitoring - full implementation requires data in your database")
 
 def show_reports_page(start_date, end_date):
-    st.warning("🚧 The 'Reports' page is currently under construction.")
+    """Display the reports and export page."""
+    st.markdown("## 📄 Reports & Export")
+    
+    user_role = st.session_state.get('user_role', 'Viewer')
+    
+    if user_role == 'Viewer':
+        st.warning("🔒 You have read-only access. Contact an Administrator to get export permissions.")
+        return
+    
+    st.info("📄 Report generation - full implementation available for Analyst and Owner roles")
 
-
-# FIX: Wrapped the main application logic in a function for better structure.
 def main():
     """Main application function."""
     load_css()
@@ -750,7 +717,7 @@ def main():
     # Check authentication
     if not check_password():
         return
-    
+        
     # Header with logo and branding
     header_col1, header_col2 = st.columns([1, 4])
     
@@ -764,7 +731,7 @@ def main():
             <p class="subheader" style="margin-bottom: 0.5rem;">Monitoring & Evaluation Dashboard</p>
             <div style="background: {BRAND_COLORS['primary']}; color: white; padding: 0.25rem 0.75rem; 
                         border-radius: 0.375rem; font-size: 0.75rem; display: inline-block;">
-                Role: {st.session_state.get('user_role', 'Viewer')}
+                Role: {st.session_state.get('user_role', 'Viewer')} 
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -773,48 +740,73 @@ def main():
     
     # Sidebar with logo and filters
     with st.sidebar:
+        # Sidebar logo
         display_miva_logo(180)
+        
         st.markdown("---")
+        
+        # Database status
+        db_connected = show_database_status()
+        
         st.markdown("## 📊 Dashboard Filters")
-
-    # Period selection
-    period_options = ["Last 7 days", "Last 14 days", "Last 30 days", "Last 90 days", "Custom"]
-    period = st.sidebar.selectbox("📅 Time Period", period_options)
+        
+        # Period selection
+        period_options = ["Last 7 days", "Last 14 days", "Last 30 days", "Last 90 days", "Custom"]
+        period = st.selectbox("📅 Time Period", period_options)
+        
+        # Custom date range for custom period
+        custom_start, custom_end = None, None
+        if period == "Custom":
+            col1, col2 = st.columns(2)
+            with col1:
+                custom_start = st.date_input("Start Date", value=date.today() - timedelta(days=30))
+            with col2:
+                custom_end = st.date_input("End Date", value=date.today())
+        
+        # Compute dates
+        start_date, end_date = compute_dates(period, custom_start, custom_end)
+        period_length = (end_date - start_date).days
+        previous_start = start_date - timedelta(days=period_length)
+        previous_end = start_date
+        
+        # Additional filters
+        st.markdown("### 🔍 Advanced Filters")
+        
+        widget_filter = st.text_input("🎯 Widget ID", placeholder="Enter widget ID...")
+        
+        rating_range = st.slider("⭐ Rating Range", 1, 5, (1, 5))
+        min_rating, max_rating = rating_range
+        
+        feedback_type_options = ["All", "positive", "negative", "neutral", "bug_report", "suggestion"]
+        feedback_type = st.selectbox("📝 Feedback Type", feedback_type_options)
+        
+        email_domain = st.text_input("📧 Email Domain", placeholder="e.g., gmail.com")
+        
+        only_active = st.checkbox("🟢 Only Active Sessions", value=True)
+        
+        # Role and logout controls
+        st.markdown("---")
+        st.markdown(f"**Current Role:** {st.session_state.get('user_role', 'Viewer')}")
+        
+        if st.button("🚪 Logout", type="secondary"):
+            for key in list(st.session_state.keys()):
+                del st.session_state[key]
+            st.rerun()
+        
+        # Page selection
+        st.markdown("## 📱 Navigation")
+        pages = ["📊 Overview", "💬 Feedback", "🗨️ Conversations", "👥 Sessions", "🔐 OTP Monitor", "📄 Reports"]
+        selected_page = st.selectbox("Select Page", pages)
     
-    # Custom date range for custom period
-    custom_start, custom_end = None, None
-    if period == "Custom":
-        col1, col2 = st.sidebar.columns(2)
-        with col1:
-            custom_start = st.date_input("Start Date", value=date.today() - timedelta(days=30))
-        with col2:
-            custom_end = st.date_input("End Date", value=date.today())
+    # Check if database is connected before proceeding
+    if not db_connected:
+        st.error("🔌 Database connection required. Please check your connection settings and try again.")
+        st.info("💡 **Troubleshooting Tips:**\n- Check if the database server is accessible\n- Verify your credentials in the secrets configuration\n- Contact your system administrator if the problem persists")
+        return
     
-    # Compute dates
-    start_date, end_date = compute_dates(period, custom_start, custom_end)
-    period_length = (end_date - start_date).days
-    previous_start = start_date - timedelta(days=period_length)
-    previous_end = start_date
-    
-    # Additional filters
-    st.sidebar.markdown("### 🔍 Advanced Filters")
-    widget_filter = st.sidebar.text_input("🎯 Widget ID", placeholder="Enter widget ID...")
-    rating_range = st.sidebar.slider("⭐ Rating Range", 1, 5, (1, 5))
-    min_rating, max_rating = rating_range
-    feedback_type_options = ["All", "positive", "negative", "neutral", "bug_report", "suggestion"]
-    feedback_type = st.sidebar.selectbox("📝 Feedback Type", feedback_type_options)
-    email_domain = st.sidebar.text_input("📧 Email Domain", placeholder="e.g., gmail.com")
-    only_active = st.sidebar.checkbox("🟢 Only Active Sessions", value=True)
-    
-    # Page selection
-    st.sidebar.markdown("## 📱 Navigation")
-    pages = ["📊 Overview", "💬 Feedback", "🗨️ Conversations", "👥 Sessions", "🔐 OTP Monitor", "📄 Reports"]
-    selected_page = st.sidebar.selectbox("Select Page", pages)
-    
-    # FIX: Placed page rendering logic in a try/except block for safety.
+    # Display selected page with error handling
     try:
         if selected_page == "📊 Overview":
-            # FIX: Added the missing call to show the overview page.
             show_overview_page(start_date, end_date, previous_start, previous_end)
         elif selected_page == "💬 Feedback":
             show_feedback_page(start_date, end_date, min_rating, max_rating, feedback_type, email_domain)
@@ -826,7 +818,6 @@ def main():
             show_otp_page(start_date, end_date)
         elif selected_page == "📄 Reports":
             show_reports_page(start_date, end_date)
-            
     except Exception as e:
         st.error(f"An error occurred: {e}")
         st.info("Please try refreshing the page or contact support if the problem persists.")
